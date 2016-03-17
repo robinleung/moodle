@@ -91,6 +91,7 @@ class renderer_base {
 
             $loader = new \core\output\mustache_filesystem_loader();
             $stringhelper = new \core\output\mustache_string_helper();
+            $quotehelper = new \core\output\mustache_quote_helper();
             $jshelper = new \core\output\mustache_javascript_helper($this->page->requires);
             $pixhelper = new \core\output\mustache_pix_helper($this);
 
@@ -99,6 +100,7 @@ class renderer_base {
 
             $helpers = array('config' => $safeconfig,
                              'str' => array($stringhelper, 'str'),
+                             'quote' => array($quotehelper, 'quote'),
                              'js' => array($jshelper, 'help'),
                              'pix' => array($pixhelper, 'pix'));
 
@@ -106,7 +108,8 @@ class renderer_base {
                 'cache' => $cachedir,
                 'escape' => 's',
                 'loader' => $loader,
-                'helpers' => $helpers));
+                'helpers' => $helpers,
+                'pragmas' => [Mustache_Engine::PRAGMA_BLOCKS]));
 
         }
 
@@ -829,13 +832,13 @@ class core_renderer extends renderer_base {
             // Special case for site home page - please do not remove
             return '<div class="sitelink">' .
                    '<a title="Moodle" href="http://moodle.org/">' .
-                   '<img src="' . $this->pix_url('moodlelogo') . '" alt="moodlelogo" /></a></div>';
+                   '<img src="' . $this->pix_url('moodlelogo') . '" alt="'.get_string('moodlelogo').'" /></a></div>';
 
         } else if (!empty($CFG->target_release) && $CFG->target_release != $CFG->release) {
             // Special case for during install/upgrade.
             return '<div class="sitelink">'.
                    '<a title="Moodle" href="http://docs.moodle.org/en/Administrator_documentation" onclick="this.target=\'_blank\'">' .
-                   '<img src="' . $this->pix_url('moodlelogo') . '" alt="moodlelogo" /></a></div>';
+                   '<img src="' . $this->pix_url('moodlelogo') . '" alt="'.get_string('moodlelogo').'" /></a></div>';
 
         } else if ($this->page->course->id == $SITE->id || strpos($this->page->pagetype, 'course-view') === 0) {
             return '<div class="homelink"><a href="' . $CFG->wwwroot . '/">' .
@@ -1393,8 +1396,10 @@ class core_renderer extends renderer_base {
             $output = '';
             $skipdest = '';
         } else {
-            $output = html_writer::tag('a', get_string('skipa', 'access', $skiptitle), array('href' => '#sb-' . $bc->skipid, 'class' => 'skip-block'));
-            $skipdest = html_writer::tag('span', '', array('id' => 'sb-' . $bc->skipid, 'class' => 'skip-block-to'));
+            $output = html_writer::link('#sb-'.$bc->skipid, get_string('skipa', 'access', $skiptitle),
+                      array('class' => 'skip skip-block', 'id' => 'fsb-' . $bc->skipid));
+            $skipdest = html_writer::span('', 'skip-block-to',
+                      array('id' => 'sb-' . $bc->skipid));
         }
 
         $output .= html_writer::start_tag('div', $bc->attributes);
@@ -2831,7 +2836,7 @@ EOD;
      * @return string HTML fragment.
      */
     public function notify_message($message) {
-        $n = new notification($message, notification::NOTIFY_MESSAGE);
+        $n = new \core\output\notification($message, \core\output\notification::NOTIFY_MESSAGE);
         return $this->render($n);
     }
 
@@ -2959,7 +2964,7 @@ EOD;
      * @return string the HTML to output.
      */
     public function skip_link_target($id = null) {
-        return html_writer::tag('span', '', array('id' => $id));
+        return html_writer::span('', '', array('id' => $id));
     }
 
     /**
@@ -3182,7 +3187,7 @@ EOD;
         }
 
         // Get some navigation opts.
-        $opts = user_get_user_navigation_info($user, $this->page, $this->page->course);
+        $opts = user_get_user_navigation_info($user, $this->page);
 
         $avatarclasses = "avatars";
         $avatarcontents = html_writer::span($opts->metadata['useravatar'], 'avatar current');
@@ -3668,32 +3673,34 @@ EOD;
             return $str;
         }
 
-        // Print subtree
-        $str .= html_writer::start_tag('ul', array('class' => 'tabrow'. $tabobject->level));
-        $cnt = 0;
-        foreach ($tabobject->subtree as $tab) {
-            $liclass = '';
-            if (!$cnt) {
-                $liclass .= ' first';
-            }
-            if ($cnt == count($tabobject->subtree) - 1) {
-                $liclass .= ' last';
-            }
-            if ((empty($tab->subtree)) && (!empty($tab->selected))) {
-                $liclass .= ' onerow';
-            }
+        // Print subtree.
+        if ($tabobject->level == 0 || $tabobject->selected || $tabobject->activated) {
+            $str .= html_writer::start_tag('ul', array('class' => 'tabrow'. $tabobject->level));
+            $cnt = 0;
+            foreach ($tabobject->subtree as $tab) {
+                $liclass = '';
+                if (!$cnt) {
+                    $liclass .= ' first';
+                }
+                if ($cnt == count($tabobject->subtree) - 1) {
+                    $liclass .= ' last';
+                }
+                if ((empty($tab->subtree)) && (!empty($tab->selected))) {
+                    $liclass .= ' onerow';
+                }
 
-            if ($tab->selected) {
-                $liclass .= ' here selected';
-            } else if ($tab->activated) {
-                $liclass .= ' here active';
-            }
+                if ($tab->selected) {
+                    $liclass .= ' here selected';
+                } else if ($tab->activated) {
+                    $liclass .= ' here active';
+                }
 
-            // This will recursively call function render_tabobject() for each item in subtree
-            $str .= html_writer::tag('li', $this->render($tab), array('class' => trim($liclass)));
-            $cnt++;
+                // This will recursively call function render_tabobject() for each item in subtree.
+                $str .= html_writer::tag('li', $this->render($tab), array('class' => trim($liclass)));
+                $cnt++;
+            }
+            $str .= html_writer::end_tag('ul');
         }
-        $str .= html_writer::end_tag('ul');
 
         return $str;
     }
@@ -3768,7 +3775,10 @@ EOD;
                 $additionalclasses[] = 'docked-region-'.$region;
             }
         }
-        if (count($usedregions) === 1) {
+        if (!$usedregions) {
+            // No regions means there is only content, add 'content-only' class.
+            $additionalclasses[] = 'content-only';
+        } else if (count($usedregions) === 1) {
             // Add the -only class for the only used region.
             $region = array_shift($usedregions);
             $additionalclasses[] = $region . '-only';
@@ -3942,7 +3952,7 @@ EOD;
      * @return string HTML for the header bar.
      */
     public function context_header($headerinfo = null, $headinglevel = 1) {
-        global $DB, $USER;
+        global $DB, $USER, $CFG;
         $context = $this->page->context;
         // Make sure to use the heading if it has been set.
         if (isset($headerinfo['heading'])) {
@@ -3972,7 +3982,7 @@ EOD;
 
             $imagedata = $this->user_picture($user, array('size' => 100));
             // Check to see if we should be displaying a message button.
-            if ($USER->id != $user->id && has_capability('moodle/site:sendmessage', $context)) {
+            if (!empty($CFG->messaging) && $USER->id != $user->id && has_capability('moodle/site:sendmessage', $context)) {
                 $userbuttons = array(
                     'messages' => array(
                         'buttontype' => 'message',
@@ -3983,6 +3993,7 @@ EOD;
                         'page' => $this->page
                     )
                 );
+                $this->page->requires->string_for_js('changesmadereallygoaway', 'moodle');
             }
         }
 

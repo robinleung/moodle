@@ -34,7 +34,10 @@ $strchoices = get_string('modulenameplural', 'choice');
 
 $context = context_module::instance($cm->id);
 
-if ($action == 'delchoice' and confirm_sesskey() and is_enrolled($context, NULL, 'mod/choice:choose') and $choice->allowupdate) {
+list($choiceavailable, $warnings) = choice_get_availability_status($choice);
+
+if ($action == 'delchoice' and confirm_sesskey() and is_enrolled($context, NULL, 'mod/choice:choose') and $choice->allowupdate
+        and $choiceavailable) {
     $answercount = $DB->count_records('choice_answers', array('choiceid' => $choice->id, 'userid' => $USER->id));
     if ($answercount > 0) {
         $DB->delete_records('choice_answers', array('choiceid' => $choice->id, 'userid' => $USER->id));
@@ -50,10 +53,6 @@ if ($action == 'delchoice' and confirm_sesskey() and is_enrolled($context, NULL,
 
 $PAGE->set_title($choice->name);
 $PAGE->set_heading($course->fullname);
-
-// Mark viewed by user (if required)
-$completion = new completion_info($course);
-$completion->set_module_viewed($cm);
 
 /// Submit any new data if there is any
 if (data_submitted() && is_enrolled($context, NULL, 'mod/choice:choose') && confirm_sesskey()) {
@@ -71,6 +70,11 @@ if (data_submitted() && is_enrolled($context, NULL, 'mod/choice:choose') && conf
         $answer = optional_param('answer', '', PARAM_INT);
     }
 
+    if (!$choiceavailable) {
+        $reason = current(array_keys($warnings));
+        throw new moodle_exception($reason, 'choice', '', $warnings[$reason]);
+    }
+
     if ($answer) {
         choice_user_submit_response($answer, $choice, $USER->id, $course, $cm);
         redirect(new moodle_url('/mod/choice/view.php',
@@ -82,6 +86,9 @@ if (data_submitted() && is_enrolled($context, NULL, 'mod/choice:choose') && conf
             array('id' => $cm->id, 'notify' => 'mustchooseone', 'sesskey' => sesskey())));
     }
 }
+
+// Completion and trigger events.
+choice_view($choice, $course, $cm, $context);
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading(format_string($choice->name), 2, null);
@@ -98,11 +105,6 @@ if ($notify and confirm_sesskey()) {
 $eventdata = array();
 $eventdata['objectid'] = $choice->id;
 $eventdata['context'] = $context;
-
-$event = \mod_choice\event\course_module_viewed::create($eventdata);
-$event->add_record_snapshot('course_modules', $cm);
-$event->add_record_snapshot('course', $course);
-$event->trigger();
 
 /// Check to see if groups are being used in this choice
 $groupmode = groups_get_activity_groupmode($cm);
@@ -129,7 +131,7 @@ if ($choice->intro) {
 }
 
 $timenow = time();
-$current = $DB->get_records('choice_answers', array('choiceid' => $choice->id, 'userid' => $USER->id));
+$current = choice_get_my_response($choice);
 //if user has already made a selection, and they are not allowed to update it or if choice is not open, show their selected answer.
 if (isloggedin() && (!empty($current)) &&
     (empty($choice->allowupdate) || ($timenow > $choice->timeclose)) ) {
@@ -178,7 +180,7 @@ if (!$choiceformshown) {
     } else if (!is_enrolled($context)) {
         // Only people enrolled can make a choice
         $SESSION->wantsurl = qualified_me();
-        $SESSION->enrolcancel = clean_param($_SERVER['HTTP_REFERER'], PARAM_LOCALURL);
+        $SESSION->enrolcancel = get_local_referer(false);
 
         $coursecontext = context_course::instance($course->id);
         $courseshortname = format_string($course->shortname, true, array('context' => $coursecontext));
@@ -194,9 +196,7 @@ if (!$choiceformshown) {
 }
 
 // print the results at the bottom of the screen
-if ( $choice->showresults == CHOICE_SHOWRESULTS_ALWAYS or
-    ($choice->showresults == CHOICE_SHOWRESULTS_AFTER_ANSWER and $current) or
-    ($choice->showresults == CHOICE_SHOWRESULTS_AFTER_CLOSE and !$choiceopen)) {
+if (choice_can_view_results($choice, $current, $choiceopen)) {
 
     if (!empty($choice->showunanswered)) {
         $choice->option[0] = get_string('notanswered', 'choice');

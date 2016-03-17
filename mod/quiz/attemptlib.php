@@ -788,16 +788,13 @@ class quiz_attempt {
     }
 
     /**
-     * Is this a student dealing with their own attempt/teacher previewing,
-     * or someone with 'mod/quiz:viewreports' reviewing someone elses attempt.
+     * Is this someone dealing with their own attempt or preview?
      *
-     * @return bool whether this situation should be treated as someone looking at their own
-     * attempt. The distinction normally only matters when an attempt is being reviewed.
+     * @return bool true => own attempt/preview. false => reviewing someone elses.
      */
     public function is_own_attempt() {
         global $USER;
-        return $this->attempt->userid == $USER->id &&
-                (!$this->is_preview_user() || $this->attempt->preview);
+        return $this->attempt->userid == $USER->id;
     }
 
     /**
@@ -805,7 +802,7 @@ class quiz_attempt {
      */
     public function is_own_preview() {
         global $USER;
-        return $this->attempt->userid == $USER->id &&
+        return $this->is_own_attempt() &&
                 $this->is_preview_user() && $this->attempt->preview;
     }
 
@@ -961,6 +958,11 @@ class quiz_attempt {
             if (is_null($this->reviewoptions)) {
                 $this->reviewoptions = quiz_get_review_options($this->get_quiz(),
                         $this->attempt, $this->quizobj->get_context());
+                if ($this->is_own_preview()) {
+                    // It should  always be possible for a teacher to review their
+                    // own preview irrespective of the review options settings.
+                    $this->reviewoptions->attempt = true;
+                }
             }
             return $this->reviewoptions;
 
@@ -1569,7 +1571,19 @@ class quiz_attempt {
      */
     public function check_file_access($slot, $reviewing, $contextid, $component,
             $filearea, $args, $forcedownload) {
-        return $this->quba->check_file_access($slot, $this->get_display_options($reviewing),
+        $options = $this->get_display_options($reviewing);
+
+        // Check permissions - warning there is similar code in review.php and
+        // reviewquestion.php. If you change on, change them all.
+        if ($reviewing && $this->is_own_attempt() && !$options->attempt) {
+            return false;
+        }
+
+        if ($reviewing && !$this->is_own_attempt() && !$this->is_review_allowed()) {
+            return false;
+        }
+
+        return $this->quba->check_file_access($slot, $options,
                 $component, $filearea, $args, $forcedownload);
     }
 
@@ -1785,6 +1799,7 @@ class quiz_attempt {
 
         $transaction = $DB->start_delegated_transaction();
 
+        // Choose the replacement question.
         $questiondata = $DB->get_record('question',
                 array('id' => $this->slots[$slot]->questionid));
         if ($questiondata->qtype != 'random') {
@@ -1799,7 +1814,11 @@ class quiz_attempt {
             }
         }
 
+        // Add the question to the usage. It is important we do this before we choose a variant.
         $newquestion = question_bank::load_question($newqusetionid);
+        $newslot = $this->quba->add_question_in_place_of_other($slot, $newquestion);
+
+        // Choose the variant.
         if ($newquestion->get_num_variants() == 1) {
             $variant = 1;
         } else {
@@ -1809,8 +1828,8 @@ class quiz_attempt {
                     $newquestion->get_variants_selection_seed());
         }
 
-        $newslot = $this->quba->add_question_in_place_of_other($slot, $newquestion);
-        $this->quba->start_question($slot);
+        // Start the question.
+        $this->quba->start_question($slot, $variant);
         $this->quba->set_max_mark($newslot, 0);
         $this->quba->set_question_attempt_metadata($newslot, 'originalslot', $slot);
         question_engine::save_questions_usage_by_activity($this->quba);
@@ -1959,23 +1978,6 @@ class quiz_attempt {
         $event->add_record_snapshot('quiz', $this->get_quiz());
         $event->add_record_snapshot('quiz_attempts', $this->get_attempt());
         $event->trigger();
-    }
-
-    /**
-     * Print the fields of the comment form for questions in this attempt.
-     * @param $slot which question to output the fields for.
-     * @param $prefix Prefix to add to all field names.
-     */
-    public function question_print_comment_fields($slot, $prefix) {
-        // Work out a nice title.
-        $student = get_record('user', 'id', $this->get_userid());
-        $a = new object();
-        $a->fullname = fullname($student, true);
-        $a->attempt = $this->get_attempt_number();
-
-        question_print_comment_fields($this->quba->get_question_attempt($slot),
-                $prefix, $this->get_display_options(true)->markdp,
-                get_string('gradingattempt', 'quiz_grading', $a));
     }
 
     // Private methods =========================================================

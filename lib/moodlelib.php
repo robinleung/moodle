@@ -2026,7 +2026,7 @@ function get_user_preferences($name = null, $default = null, $user = null) {
 // FUNCTIONS FOR HANDLING TIME.
 
 /**
- * Given date parts in user time produce a GMT timestamp.
+ * Given Gregorian date parts in user time produce a GMT timestamp.
  *
  * @package core
  * @category time
@@ -2208,7 +2208,7 @@ function date_format_string($date, $format, $tz = 99) {
 
 /**
  * Given a $time timestamp in GMT (seconds since epoch),
- * returns an array that represents the date in user time
+ * returns an array that represents the Gregorian date in user time
  *
  * @package core
  * @category time
@@ -2482,6 +2482,11 @@ function require_login($courseorid = null, $autologinguest = true, $cm = null, $
         $preventredirect = true;
     }
 
+    if (AJAX_SCRIPT) {
+        // We cannot redirect for AJAX scripts either.
+        $preventredirect = true;
+    }
+
     // Setup global $COURSE, themes, language and locale.
     if (!empty($courseorid)) {
         if (is_object($courseorid)) {
@@ -2521,11 +2526,15 @@ function require_login($courseorid = null, $autologinguest = true, $cm = null, $
     }
 
     // Redirect to the login page if session has expired, only with dbsessions enabled (MDL-35029) to maintain current behaviour.
-    if ((!isloggedin() or isguestuser()) && !empty($SESSION->has_timed_out) && !$preventredirect && !empty($CFG->dbsessions)) {
-        if ($setwantsurltome) {
-            $SESSION->wantsurl = qualified_me();
+    if ((!isloggedin() or isguestuser()) && !empty($SESSION->has_timed_out) && !empty($CFG->dbsessions)) {
+        if ($preventredirect) {
+            throw new require_login_session_timeout_exception();
+        } else {
+            if ($setwantsurltome) {
+                $SESSION->wantsurl = qualified_me();
+            }
+            redirect(get_login_url());
         }
-        redirect(get_login_url());
     }
 
     // If the user is not even logged in yet then make sure they are.
@@ -2549,8 +2558,10 @@ function require_login($courseorid = null, $autologinguest = true, $cm = null, $
             if ($setwantsurltome) {
                 $SESSION->wantsurl = qualified_me();
             }
-            if (!empty($_SERVER['HTTP_REFERER'])) {
-                $SESSION->fromurl  = $_SERVER['HTTP_REFERER'];
+
+            $referer = get_local_referer(false);
+            if (!empty($referer)) {
+                $SESSION->fromurl = $referer;
             }
 
             // Give auth plugins an opportunity to authenticate or redirect to an external login page
@@ -2807,15 +2818,6 @@ function require_login($courseorid = null, $autologinguest = true, $cm = null, $
         }
     }
 
-    // Set the global $COURSE.
-    // TODO MDL-49434: setting current course/cm should be after the check $cm->uservisible .
-    if ($cm) {
-        $PAGE->set_cm($cm, $course);
-        $PAGE->set_pagelayout('incourse');
-    } else if (!empty($courseorid)) {
-        $PAGE->set_course($course);
-    }
-
     // Check visibility of activity to current user; includes visible flag, conditional availability, etc.
     if ($cm && !$cm->uservisible) {
         if ($preventredirect) {
@@ -2827,6 +2829,14 @@ function require_login($courseorid = null, $autologinguest = true, $cm = null, $
             $url = new moodle_url('/');
         }
         redirect($url, get_string('activityiscurrentlyhidden'));
+    }
+
+    // Set the global $COURSE.
+    if ($cm) {
+        $PAGE->set_cm($cm, $course);
+        $PAGE->set_pagelayout('incourse');
+    } else if (!empty($courseorid)) {
+        $PAGE->set_course($course);
     }
 
     // Finally access granted, update lastaccess times.
@@ -3254,7 +3264,7 @@ function fullname($user, $override=false) {
     $allnames = get_all_user_name_fields();
     if ($CFG->debugdeveloper) {
         foreach ($allnames as $allname) {
-            if (!array_key_exists($allname, $user)) {
+            if (!property_exists($user, $allname)) {
                 // If all the user name fields are not set in the user object, then notify the programmer that it needs to be fixed.
                 debugging('You need to update your sql to include additional name fields in the user object.', DEBUG_DEVELOPER);
                 // Message has been sent, no point in sending the message multiple times.
@@ -3537,9 +3547,6 @@ function get_extra_user_fields_sql($context, $alias='', $prefix='', $already = a
 function get_user_field_name($field) {
     // Some fields have language strings which are not the same as field name.
     switch ($field) {
-        case 'phone1' : {
-            return get_string('phone');
-        }
         case 'url' : {
             return get_string('webpage');
         }
@@ -3799,8 +3806,10 @@ function update_user_record_by_id($id) {
         $customfields = $userauth->get_custom_user_profile_fields();
 
         foreach ($newinfo as $key => $value) {
-            $key = strtolower($key);
             $iscustom = in_array($key, $customfields);
+            if (!$iscustom) {
+                $key = strtolower($key);
+            }
             if ((!property_exists($oldinfo, $key) && !$iscustom) or $key === 'username' or $key === 'id'
                     or $key === 'auth' or $key === 'mnethostid' or $key === 'deleted') {
                 // Unknown or must not be changed.
@@ -3981,8 +3990,11 @@ function delete_user(stdClass $user) {
     // Force logout - may fail if file based sessions used, sorry.
     \core\session\manager::kill_user_sessions($user->id);
 
+    // Generate username from email address, or a fake email.
+    $delemail = !empty($user->email) ? $user->email : $user->username . '.' . $user->id . '@unknownemail.invalid';
+    $delname = clean_param($delemail . "." . time(), PARAM_USERNAME);
+
     // Workaround for bulk deletes of users with the same email address.
-    $delname = clean_param($user->email . "." . time(), PARAM_USERNAME);
     while ($DB->record_exists('user', array('username' => $delname))) { // No need to use mnethostid here.
         $delname++;
     }
@@ -4723,7 +4735,7 @@ function remove_course_contents($courseid, $showfeedback = true, array $options 
     require_once($CFG->libdir.'/questionlib.php');
     require_once($CFG->libdir.'/gradelib.php');
     require_once($CFG->dirroot.'/group/lib.php');
-    require_once($CFG->dirroot.'/tag/coursetagslib.php');
+    require_once($CFG->dirroot.'/tag/lib.php');
     require_once($CFG->dirroot.'/comment/lib.php');
     require_once($CFG->dirroot.'/rating/lib.php');
     require_once($CFG->dirroot.'/notes/lib.php');
@@ -4841,10 +4853,12 @@ function remove_course_contents($courseid, $showfeedback = true, array $options 
 
     // Cleanup the rest of plugins.
     $cleanuplugintypes = array('report', 'coursereport', 'format');
+    $callbacks = get_plugins_with_function('delete_course', 'lib.php');
     foreach ($cleanuplugintypes as $type) {
-        $plugins = get_plugin_list_with_function($type, 'delete_course', 'lib.php');
-        foreach ($plugins as $plugin => $pluginfunction) {
-            $pluginfunction($course->id, $showfeedback);
+        if (!empty($callbacks[$type])) {
+            foreach ($callbacks[$type] as $pluginfunction) {
+                $pluginfunction($course->id, $showfeedback);
+            }
         }
         if ($showfeedback) {
             echo $OUTPUT->notification($strdeleted.get_string('type_'.$type.'_plural', 'plugin'), 'notifysuccess');
@@ -4896,7 +4910,7 @@ function remove_course_contents($courseid, $showfeedback = true, array $options 
     $rm->delete_ratings($delopt);
 
     // Delete course tags.
-    coursetag_delete_course_tags($course->id, $showfeedback);
+    tag_set('course', $course->id, array(), 'core', $coursecontext->id);
 
     // Delete calendar events.
     $DB->delete_records('event', array('courseid' => $course->id));
@@ -4922,7 +4936,6 @@ function remove_course_contents($courseid, $showfeedback = true, array $options 
     $oldcourse->summary          = '';
     $oldcourse->cacherev         = 0;
     $oldcourse->legacyfiles      = 0;
-    $oldcourse->enablecompletion = 0;
     if (!empty($options['keep_groups_and_groupings'])) {
         $oldcourse->defaultgroupingid = 0;
     }
@@ -5050,6 +5063,11 @@ function reset_course_userdata($data) {
                          SET timestart = timestart + ?
                        WHERE courseid=? AND instance=0";
         $DB->execute($updatesql, array($data->timeshift, $data->courseid));
+
+        // Update any date activity restrictions.
+        if ($CFG->enableavailability) {
+            \availability_date\condition::update_all_dates($data->courseid, $data->timeshift);
+        }
 
         $status[] = array('component' => $componentstr, 'item' => get_string('datechanged'), 'error' => false);
     }
@@ -5602,11 +5620,11 @@ function email_to_user($user, $from, $subject, $messagetext, $messagehtml = '', 
             // Before doing the comparison, make sure that the paths are correct (Windows uses slashes in the other direction).
             $attachpath = str_replace('\\', '/', $attachmentpath);
             // Make sure both variables are normalised before comparing.
-            $temppath = str_replace('\\', '/', $CFG->tempdir);
+            $temppath = str_replace('\\', '/', realpath($CFG->tempdir));
 
             // If the attachment is a full path to a file in the tempdir, use it as is,
             // otherwise assume it is a relative path from the dataroot (for backwards compatibility reasons).
-            if (strpos($attachpath, realpath($temppath)) !== 0) {
+            if (strpos($attachpath, $temppath) !== 0) {
                 $attachmentpath = $CFG->dataroot . '/' . $attachmentpath;
             }
 
@@ -6130,7 +6148,7 @@ function get_user_max_upload_file_size($context, $sitebytes = 0, $coursebytes = 
     }
 
     if (has_capability('moodle/course:ignorefilesizelimits', $context, $user)) {
-        return USER_CAN_IGNORE_FILE_SIZE_LIMITS;
+        return get_max_upload_file_size(USER_CAN_IGNORE_FILE_SIZE_LIMITS);
     }
 
     return get_max_upload_file_size($sitebytes, $coursebytes, $modulebytes);
@@ -7021,24 +7039,120 @@ function is_valid_plugin_name($name) {
  *      and the function names as values (e.g. 'report_courselist_hook', 'forum_hook').
  */
 function get_plugin_list_with_function($plugintype, $function, $file = 'lib.php') {
+    global $CFG;
+
+    // We don't include here as all plugin types files would be included.
+    $plugins = get_plugins_with_function($function, $file, false);
+
+    if (empty($plugins[$plugintype])) {
+        return array();
+    }
+
+    $allplugins = core_component::get_plugin_list($plugintype);
+
+    // Reformat the array and include the files.
     $pluginfunctions = array();
-    $pluginswithfile = core_component::get_plugin_list_with_file($plugintype, $file, true);
-    foreach ($pluginswithfile as $plugin => $notused) {
-        $fullfunction = $plugintype . '_' . $plugin . '_' . $function;
+    foreach ($plugins[$plugintype] as $pluginname => $functionname) {
 
-        if (function_exists($fullfunction)) {
-            // Function exists with standard name. Store, indexed by frankenstyle name of plugin.
-            $pluginfunctions[$plugintype . '_' . $plugin] = $fullfunction;
+        // Check that it has not been removed and the file is still available.
+        if (!empty($allplugins[$pluginname])) {
 
-        } else if ($plugintype === 'mod') {
-            // For modules, we also allow plugin without full frankenstyle but just starting with the module name.
-            $shortfunction = $plugin . '_' . $function;
-            if (function_exists($shortfunction)) {
-                $pluginfunctions[$plugintype . '_' . $plugin] = $shortfunction;
+            $filepath = $allplugins[$pluginname] . DIRECTORY_SEPARATOR . $file;
+            if (file_exists($filepath)) {
+                include_once($filepath);
+                $pluginfunctions[$plugintype . '_' . $pluginname] = $functionname;
             }
         }
     }
+
     return $pluginfunctions;
+}
+
+/**
+ * Get a list of all the plugins that define a certain API function in a certain file.
+ *
+ * @param string $function the part of the name of the function after the
+ *      frankenstyle prefix. e.g 'hook' if you are looking for functions with
+ *      names like report_courselist_hook.
+ * @param string $file the name of file within the plugin that defines the
+ *      function. Defaults to lib.php.
+ * @param bool $include Whether to include the files that contain the functions or not.
+ * @return array with [plugintype][plugin] = functionname
+ */
+function get_plugins_with_function($function, $file = 'lib.php', $include = true) {
+    global $CFG;
+
+    $cache = \cache::make('core', 'plugin_functions');
+
+    // Including both although I doubt that we will find two functions definitions with the same name.
+    // Clearning the filename as cache_helper::hash_key only allows a-zA-Z0-9_.
+    $key = $function . '_' . clean_param($file, PARAM_ALPHA);
+
+    if ($pluginfunctions = $cache->get($key)) {
+
+        // Checking that the files are still available.
+        foreach ($pluginfunctions as $plugintype => $plugins) {
+
+            $allplugins = \core_component::get_plugin_list($plugintype);
+            foreach ($plugins as $plugin => $fullpath) {
+
+                // Cache might be out of sync with the codebase, skip the plugin if it is not available.
+                if (empty($allplugins[$plugin])) {
+                    unset($pluginfunctions[$plugintype][$plugin]);
+                    continue;
+                }
+
+                $fileexists = file_exists($allplugins[$plugin] . DIRECTORY_SEPARATOR . $file);
+                if ($include && $fileexists) {
+                    // Include the files if it was requested.
+                    include_once($allplugins[$plugin] . DIRECTORY_SEPARATOR . $file);
+                } else if (!$fileexists) {
+                    // If the file is not available any more it should not be returned.
+                    unset($pluginfunctions[$plugintype][$plugin]);
+                }
+            }
+        }
+        return $pluginfunctions;
+    }
+
+    $pluginfunctions = array();
+
+    // To fill the cached. Also, everything should continue working with cache disabled.
+    $plugintypes = \core_component::get_plugin_types();
+    foreach ($plugintypes as $plugintype => $unused) {
+
+        // We need to include files here.
+        $pluginswithfile = \core_component::get_plugin_list_with_file($plugintype, $file, true);
+        foreach ($pluginswithfile as $plugin => $notused) {
+
+            $fullfunction = $plugintype . '_' . $plugin . '_' . $function;
+
+            $pluginfunction = false;
+            if (function_exists($fullfunction)) {
+                // Function exists with standard name. Store, indexed by frankenstyle name of plugin.
+                $pluginfunction = $fullfunction;
+
+            } else if ($plugintype === 'mod') {
+                // For modules, we also allow plugin without full frankenstyle but just starting with the module name.
+                $shortfunction = $plugin . '_' . $function;
+                if (function_exists($shortfunction)) {
+                    $pluginfunction = $shortfunction;
+                }
+            }
+
+            if ($pluginfunction) {
+                if (empty($pluginfunctions[$plugintype])) {
+                    $pluginfunctions[$plugintype] = array();
+                }
+                $pluginfunctions[$plugintype][$plugin] = $pluginfunction;
+            }
+
+        }
+    }
+    $cache->set($key, $pluginfunctions);
+
+    return $pluginfunctions;
+
 }
 
 /**
@@ -7418,7 +7532,7 @@ function count_words($string) {
     // Replace underscores (which are classed as word characters) with spaces.
     $string = preg_replace('/_/u', ' ', $string);
     // Remove any characters that shouldn't be treated as word boundaries.
-    $string = preg_replace('/[\'’-]/u', '', $string);
+    $string = preg_replace('/[\'"’-]/u', '', $string);
     // Remove dots and commas from within numbers only.
     $string = preg_replace('/([0-9])[.,]([0-9])/u', '$1$2', $string);
 
@@ -7447,14 +7561,16 @@ function count_letters($string) {
  * @param int $length The length of the string to be created.
  * @return string
  */
-function random_string ($length=15) {
+function random_string($length=15) {
+    $randombytes = random_bytes_emulate($length);
     $pool  = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     $pool .= 'abcdefghijklmnopqrstuvwxyz';
     $pool .= '0123456789';
     $poollen = strlen($pool);
     $string = '';
     for ($i = 0; $i < $length; $i++) {
-        $string .= substr($pool, (mt_rand()%($poollen)), 1);
+        $rand = ord($randombytes[$i]);
+        $string .= substr($pool, ($rand%($poollen)), 1);
     }
     return $string;
 }
@@ -7475,11 +7591,54 @@ function complex_random_string($length=null) {
     if ($length===null) {
         $length = floor(rand(24, 32));
     }
+    $randombytes = random_bytes_emulate($length);
     $string = '';
     for ($i = 0; $i < $length; $i++) {
-        $string .= $pool[(mt_rand()%$poollen)];
+        $rand = ord($randombytes[$i]);
+        $string .= $pool[($rand%$poollen)];
     }
     return $string;
+}
+
+/**
+ * Try to generates cryptographically secure pseudo-random bytes.
+ *
+ * Note this is achieved by fallbacking between:
+ *  - PHP 7 random_bytes().
+ *  - OpenSSL openssl_random_pseudo_bytes().
+ *  - In house random generator getting its entropy from various, hard to guess, pseudo-random sources.
+ *
+ * @param int $length requested length in bytes
+ * @return string binary data
+ */
+function random_bytes_emulate($length) {
+    global $CFG;
+    if ($length <= 0) {
+        debugging('Invalid random bytes length', DEBUG_DEVELOPER);
+        return '';
+    }
+    if (function_exists('random_bytes')) {
+        // Use PHP 7 goodness.
+        $hash = @random_bytes($length);
+        if ($hash !== false) {
+            return $hash;
+        }
+    }
+    if (function_exists('openssl_random_pseudo_bytes')) {
+        // For PHP 5.3 and later with openssl extension.
+        $hash = openssl_random_pseudo_bytes($length);
+        if ($hash !== false) {
+            return $hash;
+        }
+    }
+
+    // Bad luck, there is no reliable random generator, let's just hash some unique stuff that is hard to guess.
+    $hash = sha1(serialize($CFG) . serialize($_SERVER) . microtime(true) . uniqid('', true), true);
+    // NOTE: the last param in sha1() is true, this means we are getting 20 bytes, not 40 chars as usual.
+    if ($length <= 20) {
+        return substr($hash, 0, $length);
+    }
+    return $hash . random_bytes_emulate($length - 20);
 }
 
 /**
@@ -7532,6 +7691,18 @@ function shorten_text($text, $ideal=30, $exact = false, $ending='...') {
                             'tag'  => core_text::strtolower($tagmatchings[1]),
                             'pos'  => core_text::strlen($truncate),
                         );
+                } else if (preg_match('/^<!--\[if\s.*?\]>$/s', $linematchings[1], $tagmatchings)) {
+                    $tagdetails[] = (object) array(
+                            'open' => true,
+                            'tag'  => core_text::strtolower('if'),
+                            'pos'  => core_text::strlen($truncate),
+                    );
+                } else if (preg_match('/^<!--<!\[endif\]-->$/s', $linematchings[1], $tagmatchings)) {
+                    $tagdetails[] = (object) array(
+                            'open' => false,
+                            'tag'  => core_text::strtolower('if'),
+                            'pos'  => core_text::strlen($truncate),
+                    );
                 }
             }
             // Add html-tag to $truncate'd text.
@@ -7617,7 +7788,11 @@ function shorten_text($text, $ideal=30, $exact = false, $ending='...') {
 
     // Close all unclosed html-tags.
     foreach ($opentags as $tag) {
-        $truncate .= '</' . $tag . '>';
+        if ($tag === 'if') {
+            $truncate .= '<!--<![endif]-->';
+        } else {
+            $truncate .= '</' . $tag . '>';
+        }
     }
 
     return $truncate;
@@ -8229,7 +8404,7 @@ function address_in_subnet($addr, $subnetstr) {
  */
 function mtrace($string, $eol="\n", $sleep=0) {
 
-    if (defined('STDOUT') and !PHPUNIT_TEST) {
+    if (defined('STDOUT') && !PHPUNIT_TEST && !defined('BEHAT_TEST')) {
         fwrite(STDOUT, $string.$eol);
     } else {
         echo $string . $eol;
@@ -8482,7 +8657,6 @@ function message_popup_window() {
                      FROM {message} m
                      JOIN {message_working} mw ON m.id=mw.unreadmessageid
                      JOIN {message_processors} p ON mw.processorid=p.id
-                     JOIN {user} u ON m.useridfrom=u.id
                      LEFT JOIN {message_contacts} c ON c.contactid = m.useridfrom
                                                    AND c.userid = m.useridto
                     WHERE m.useridto = :userid

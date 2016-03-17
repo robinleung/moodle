@@ -230,8 +230,16 @@ class format_singleactivity extends format_base {
         }
 
         // Make sure the current activity is in the 0-section.
+        $changed = false;
         if ($activity && $activity->sectionnum != 0) {
             moveto_module($activity, $modinfo->get_section_info(0));
+            $changed = true;
+        }
+        if ($activity && !$activity->visible) {
+            set_coursemodule_visible($activity->id, 1);
+            $changed = true;
+        }
+        if ($changed) {
             // Cache was reset so get modinfo again.
             $modinfo = get_fast_modinfo($this->courseid);
         }
@@ -338,16 +346,10 @@ class format_singleactivity extends format_base {
      * @return bool|null (null if the check is not possible)
      */
     public function activity_has_subtypes() {
-        global $CFG;
         if (!($modname = $this->get_activitytype())) {
             return null;
         }
-        $libfile = "$CFG->dirroot/mod/$modname/lib.php";
-        if (!file_exists($libfile)) {
-            return null;
-        }
-        include_once($libfile);
-        return function_exists($modname. '_get_types');
+        return component_callback('mod_' . $modname, 'get_types', array(), MOD_SUBTYPE_NO_CHILDREN) !== MOD_SUBTYPE_NO_CHILDREN;
     }
 
     /**

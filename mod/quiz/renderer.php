@@ -92,10 +92,11 @@ class mod_quiz_renderer extends plugin_renderer_base {
     /**
      * Renders the review question pop-up.
      *
+     * @param quiz_attempt $attemptobj an instance of quiz_attempt.
      * @param string $message Why the review is not allowed.
      * @return string html to output.
      */
-    public function review_question_not_allowed($message) {
+    public function review_question_not_allowed(quiz_attempt $attemptobj, $message) {
         $output = '';
         $output .= $this->header();
         $output .= $this->heading(format_string($attemptobj->get_quiz_name(), true,
@@ -234,7 +235,7 @@ class mod_quiz_renderer extends plugin_renderer_base {
 
         if ($attemptobj->get_access_manager(time())->attempt_must_be_in_popup()) {
             $this->page->requires->js_init_call('M.mod_quiz.secure_window.init_close_button',
-                    array($url), quiz_get_js_module());
+                    array($url), false, quiz_get_js_module());
             return html_writer::empty_tag('input', array('type' => 'button',
                     'value' => get_string('finishreview', 'quiz'),
                     'id' => 'secureclosebutton'));
@@ -850,7 +851,7 @@ class mod_quiz_renderer extends plugin_renderer_base {
         $output .= $this->view_information($quiz, $cm, $context, $messages);
         $guestno = html_writer::tag('p', get_string('guestsno', 'quiz'));
         $liketologin = html_writer::tag('p', get_string('liketologin'));
-        $referer = clean_param(get_referer(false), PARAM_LOCALURL);
+        $referer = get_local_referer(false);
         $output .= $this->confirm($guestno."\n\n".$liketologin."\n", get_login_url(), $referer);
         return $output;
     }

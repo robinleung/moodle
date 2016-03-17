@@ -244,7 +244,7 @@ function user_get_default_fields() {
  * @return array|null
  */
 function user_get_user_details($user, $course = null, array $userfields = array()) {
-    global $USER, $DB, $CFG;
+    global $USER, $DB, $CFG, $PAGE;
     require_once($CFG->dirroot . "/user/profile/lib.php"); // Custom field library.
     require_once($CFG->dirroot . "/lib/filelib.php");      // File handling on description and friends.
 
@@ -310,8 +310,10 @@ function user_get_user_details($user, $course = null, array $userfields = array(
     $userdetails = array();
     $userdetails['id'] = $user->id;
 
-    if (($isadmin or $currentuser) and in_array('username', $userfields)) {
-        $userdetails['username'] = $user->username;
+    if (in_array('username', $userfields)) {
+        if ($currentuser or has_capability('moodle/user:viewalldetails', $context)) {
+            $userdetails['username'] = $user->username;
+        }
     }
     if ($isadmin or $canviewfullnames) {
         if (in_array('firstname', $userfields)) {
@@ -360,12 +362,16 @@ function user_get_user_details($user, $course = null, array $userfields = array(
 
     // Profile image.
     if (in_array('profileimageurl', $userfields)) {
-        $profileimageurl = moodle_url::make_pluginfile_url($usercontext->id, 'user', 'icon', null, '/', 'f1');
-        $userdetails['profileimageurl'] = $profileimageurl->out(false);
+        $userpicture = new user_picture($user);
+        $userpicture->size = 1; // Size f1.
+        $userdetails['profileimageurl'] = $userpicture->get_url($PAGE)->out(false);
     }
     if (in_array('profileimageurlsmall', $userfields)) {
-        $profileimageurlsmall = moodle_url::make_pluginfile_url($usercontext->id, 'user', 'icon', null, '/', 'f2');
-        $userdetails['profileimageurlsmall'] = $profileimageurlsmall->out(false);
+        if (!isset($userpicture)) {
+            $userpicture = new user_picture($user);
+        }
+        $userpicture->size = 0; // Size f2.
+        $userdetails['profileimageurlsmall'] = $userpicture->get_url($PAGE)->out(false);
     }
 
     // Hidden user field.
@@ -465,18 +471,22 @@ function user_get_user_details($user, $course = null, array $userfields = array(
     }
 
     // Departement/Institution/Idnumber are not displayed on any profile, however you can get them from editing profile.
-    if ($isadmin or $currentuser or in_array('idnumber', $showuseridentityfields)) {
-        if (in_array('idnumber', $userfields) && $user->idnumber) {
+    if (in_array('idnumber', $userfields) && $user->idnumber) {
+        if (in_array('idnumber', $showuseridentityfields) or $currentuser or
+                has_capability('moodle/user:viewalldetails', $context)) {
             $userdetails['idnumber'] = $user->idnumber;
         }
     }
-    if ($isadmin or $currentuser or in_array('institution', $showuseridentityfields)) {
-        if (in_array('institution', $userfields) && $user->institution) {
+    if (in_array('institution', $userfields) && $user->institution) {
+        if (in_array('institution', $showuseridentityfields) or $currentuser or
+                has_capability('moodle/user:viewalldetails', $context)) {
             $userdetails['institution'] = $user->institution;
         }
     }
-    if ($isadmin or $currentuser or in_array('department', $showuseridentityfields)) {
-        if (in_array('department', $userfields) && isset($user->department)) { // Isset because it's ok to have department 0.
+    // Isset because it's ok to have department 0.
+    if (in_array('department', $userfields) && isset($user->department)) {
+        if (in_array('department', $showuseridentityfields) or $currentuser or
+                has_capability('moodle/user:viewalldetails', $context)) {
             $userdetails['department'] = $user->department;
         }
     }
@@ -727,6 +737,9 @@ function user_convert_text_to_menu_items($text, $page) {
  *
  * @param stdclass $user user object.
  * @param moodle_page $page page object.
+ * @param array $options associative array.
+ *     options are:
+ *     - avatarsize=35 (size of avatar image)
  * @return stdClass $returnobj navigation information object, where:
  *
  *      $returnobj->navitems    array    array of links where each link is a
@@ -769,7 +782,7 @@ function user_convert_text_to_menu_items($text, $page) {
  *          mnetidprovidername    string name of the MNet provider
  *          mnetidproviderwwwroot string URL of the MNet provider
  */
-function user_get_user_navigation_info($user, $page) {
+function user_get_user_navigation_info($user, $page, $options = array()) {
     global $OUTPUT, $DB, $SESSION, $CFG;
 
     $returnobject = new stdClass();
@@ -787,12 +800,13 @@ function user_get_user_navigation_info($user, $page) {
     $returnobject->metadata['userprofileurl'] = new moodle_url('/user/profile.php', array(
         'id' => $user->id
     ));
+
+    $avataroptions = array('link' => false, 'visibletoscreenreaders' => false);
+    if (!empty($options['avatarsize'])) {
+        $avataroptions['size'] = $options['avatarsize'];
+    }
     $returnobject->metadata['useravatar'] = $OUTPUT->user_picture (
-        $user,
-        array(
-            'link' => false,
-            'visibletoscreenreaders' => false
-        )
+        $user, $avataroptions
     );
     // Build a list of items for a regular user.
 
@@ -872,13 +886,7 @@ function user_get_user_navigation_info($user, $page) {
         $returnobject->metadata['realuserprofileurl'] = new moodle_url('/user/profile.php', array(
             'id' => $realuser->id
         ));
-        $returnobject->metadata['realuseravatar'] = $OUTPUT->user_picture (
-            $realuser,
-            array(
-                'link' => false,
-                'visibletoscreenreaders' => false
-            )
-        );
+        $returnobject->metadata['realuseravatar'] = $OUTPUT->user_picture($realuser, $avataroptions);
 
         // Build a user-revert link.
         $userrevert = new stdClass();
@@ -1068,4 +1076,61 @@ function user_mygrades_url($userid = null, $courseid = SITEID) {
         $url = $CFG->wwwroot;
     }
     return $url;
+}
+
+/**
+ * Check if a user has the permission to viewdetails in a shared course's context.
+ *
+ * @param object $user The other user's details.
+ * @param object $course Use this course to see if we have permission to see this user's profile.
+ * @param context $usercontext The user context if available.
+ * @return bool true for ability to view this user, else false.
+ */
+function user_can_view_profile($user, $course = null, $usercontext = null) {
+    global $USER, $CFG;
+
+    if ($user->deleted) {
+        return false;
+    }
+
+    // If any of these four things, return true.
+    // Number 1.
+    if ($USER->id == $user->id) {
+        return true;
+    }
+
+    // Number 2.
+    if (empty($CFG->forceloginforprofiles)) {
+        return true;
+    }
+
+    if (empty($usercontext)) {
+        $usercontext = context_user::instance($user->id);
+    }
+    // Number 3.
+    if (has_capability('moodle/user:viewdetails', $usercontext)) {
+        return true;
+    }
+
+    // Number 4.
+    if (has_coursecontact_role($user->id)) {
+        return true;
+    }
+
+    if (isset($course)) {
+        $sharedcourses = array($course);
+    } else {
+        $sharedcourses = enrol_get_shared_courses($USER->id, $user->id, true);
+    }
+    foreach ($sharedcourses as $sharedcourse) {
+        $coursecontext = context_course::instance($sharedcourse->id);
+        if (has_capability('moodle/user:viewdetails', $coursecontext)) {
+            if (!groups_user_groups_visible($sharedcourse, $user->id)) {
+                // Not a member of the same group.
+                continue;
+            }
+            return true;
+        }
+    }
+    return false;
 }

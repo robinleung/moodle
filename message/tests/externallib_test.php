@@ -322,8 +322,19 @@ class core_message_externallib_testcase extends externallib_advanced_testcase {
 
         // Checking some of the fields returned.
         $stranger = array_pop($contacts['strangers']);
+
         $this->assertEquals(core_user::NOREPLY_USER, $stranger['id']);
         $this->assertEquals(1, $stranger['unread']);
+
+        // Check that deleted users are not returned.
+        delete_user($user_offline1);
+        delete_user($user_stranger);
+        delete_user($user_online);
+        $contacts = core_message_external::get_contacts();
+        $contacts = external_api::clean_returnvalue(core_message_external::get_contacts_returns(), $contacts);
+        $this->assertCount(2, $contacts['offline']);
+        $this->assertCount(0, $contacts['online']);
+        $this->assertCount(1, $contacts['strangers']);
     }
 
     /**
@@ -397,7 +408,7 @@ class core_message_externallib_testcase extends externallib_advanced_testcase {
      * Test get_messages.
      */
     public function test_get_messages() {
-        global $CFG;
+        global $CFG, $DB;
         $this->resetAfterTest(true);
 
         $this->preventResetByRollback();
@@ -423,6 +434,15 @@ class core_message_externallib_testcase extends externallib_advanced_testcase {
         $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
         $this->assertCount(1, $messages['messages']);
 
+        // Delete the message.
+        $message = array_shift($messages['messages']);
+        $messagetobedeleted = $DB->get_record('message_read', array('id' => $message['id']));
+        message_delete_message($messagetobedeleted, $user1->id);
+
+        $messages = core_message_external::get_messages($user2->id, $user1->id, 'conversations', true, true, 0, 0);
+        $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
+        $this->assertCount(0, $messages['messages']);
+
         // Get unread conversations from user1 to user2.
         $messages = core_message_external::get_messages($user2->id, $user1->id, 'conversations', false, true, 0, 0);
         $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
@@ -431,13 +451,27 @@ class core_message_externallib_testcase extends externallib_advanced_testcase {
         // Get read messages send from user1.
         $messages = core_message_external::get_messages(0, $user1->id, 'conversations', true, true, 0, 0);
         $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
-        $this->assertCount(2, $messages['messages']);
+        $this->assertCount(1, $messages['messages']);
 
         $this->setUser($user2);
         // Get read conversations from any user to user2.
         $messages = core_message_external::get_messages($user2->id, 0, 'conversations', true, true, 0, 0);
         $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
         $this->assertCount(2, $messages['messages']);
+
+        // Conversations from user3 to user2.
+        $messages = core_message_external::get_messages($user2->id, $user3->id, 'conversations', true, true, 0, 0);
+        $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
+        $this->assertCount(1, $messages['messages']);
+
+        // Delete the message.
+        $message = array_shift($messages['messages']);
+        $messagetobedeleted = $DB->get_record('message_read', array('id' => $message['id']));
+        message_delete_message($messagetobedeleted, $user2->id);
+
+        $messages = core_message_external::get_messages($user2->id, $user3->id, 'conversations', true, true, 0, 0);
+        $messages = external_api::clean_returnvalue(core_message_external::get_messages_returns(), $messages);
+        $this->assertCount(0, $messages['messages']);
 
         $this->setUser($user3);
         // Get read notifications received by user3.
@@ -617,6 +651,12 @@ class core_message_externallib_testcase extends externallib_advanced_testcase {
         $blockedusers = core_message_external::get_blocked_users($user1->id);
         $blockedusers = external_api::clean_returnvalue(core_message_external::get_blocked_users_returns(), $blockedusers);
         $this->assertCount(1, $blockedusers['users']);
+
+        // Remove the $userblocked and check that the list now is empty.
+        delete_user($userblocked);
+        $blockedusers = core_message_external::get_blocked_users($user1->id);
+        $blockedusers = external_api::clean_returnvalue(core_message_external::get_blocked_users_returns(), $blockedusers);
+        $this->assertCount(0, $blockedusers['users']);
 
     }
 
